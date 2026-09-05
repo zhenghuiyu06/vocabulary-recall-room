@@ -12,6 +12,15 @@ export type WeakVocabularyPdfEntry = VocabularyPdfCandidate & {
   status: string;
 };
 
+export type VocabularyPdfOptions = {
+  title: string;
+  subtitle: string;
+  note: string;
+  footer: string;
+  subject: string;
+  keywords: string;
+};
+
 export type PdfCanvasFactory = (
   width: number,
   height: number,
@@ -52,6 +61,22 @@ const RATING_PRIORITY: Record<string, number> = {
   new: 2,
   familiar: 3,
 };
+const WEAK_PDF_OPTIONS: VocabularyPdfOptions = {
+  title: "待加强词汇",
+  subtitle: "看英文 - 回忆中文释义",
+  note: "已排除连续“熟悉”次数 >= 3 的单词。建议遮住中文，先回忆，再核对。",
+  footer: "连续熟悉次数 < 3",
+  subject: "连续熟悉次数少于 3 的复习词汇",
+  keywords: "英语, 词汇, 间隔复习, 待加强",
+};
+const MASTERED_PDF_OPTIONS: VocabularyPdfOptions = {
+  title: "长期记忆词汇",
+  subtitle: "已稳固词汇 - 英中对照",
+  note: "以下单词已达到长期记忆标准。可定期遮住中文进行抽查，保持记忆鲜活。",
+  footer: "长期记忆库",
+  subject: "已达到长期记忆标准的英语词汇",
+  keywords: "英语, 词汇, 长期记忆, 已掌握",
+};
 
 function statusFor(candidate: VocabularyPdfCandidate): string {
   if (candidate.lastRating === "unknown") return "不会";
@@ -76,6 +101,14 @@ export function selectWeakVocabularyEntries(
         left.word.localeCompare(right.word, "en")
       );
     });
+}
+
+export function selectMasteredVocabularyEntries(
+  candidates: VocabularyPdfCandidate[],
+): WeakVocabularyPdfEntry[] {
+  return candidates
+    .filter((candidate) => candidate.familiarStreak >= 3)
+    .map((candidate) => ({ ...candidate, status: "长期记忆" }));
 }
 
 function setFont(
@@ -213,14 +246,15 @@ function drawFirstPageHeader(
   entries: WeakVocabularyPdfEntry[],
   fontFamily: string,
   generatedAt: Date,
+  options: VocabularyPdfOptions,
 ) {
   context.fillStyle = COLORS.navy;
   setFont(context, fontFamily, 20);
-  context.fillText("待加强词汇", MARGIN, 43);
+  context.fillText(options.title, MARGIN, 43);
 
   context.fillStyle = COLORS.muted;
   setFont(context, fontFamily, 9);
-  context.fillText(`看英文 - 回忆中文释义 · 共 ${entries.length} 词`, MARGIN, 63);
+  context.fillText(`${options.subtitle} · 共 ${entries.length} 词`, MARGIN, 63);
   const date = new Intl.DateTimeFormat("zh-CN", {
     year: "numeric",
     month: "long",
@@ -241,7 +275,7 @@ function drawFirstPageHeader(
   context.fillStyle = COLORS.ink;
   setFont(context, fontFamily, 7.8);
   context.fillText(
-    "已排除连续“熟悉”次数 >= 3 的单词。建议遮住中文，先回忆，再核对。",
+    options.note,
     MARGIN + 10,
     91,
   );
@@ -251,10 +285,11 @@ function drawContinuationHeader(
   context: CanvasRenderingContext2D,
   entries: WeakVocabularyPdfEntry[],
   fontFamily: string,
+  options: VocabularyPdfOptions,
 ) {
   context.fillStyle = COLORS.navy;
   setFont(context, fontFamily, 13);
-  context.fillText("待加强词汇", MARGIN, 39);
+  context.fillText(options.title, MARGIN, 39);
   context.fillStyle = COLORS.muted;
   setFont(context, fontFamily, 8);
   context.fillText(`共 ${entries.length} 词 · 看英文，回忆中文`, MARGIN, 56);
@@ -345,6 +380,7 @@ export function renderWeakVocabularyPageImages(
   canvasFactory: PdfCanvasFactory,
   fontFamily: string,
   generatedAt = new Date(),
+  options: VocabularyPdfOptions = WEAK_PDF_OPTIONS,
 ): string[] {
   const measuringSurface = createDrawingSurface(canvasFactory);
   const pageEntries = paginateEntries(
@@ -360,9 +396,9 @@ export function renderWeakVocabularyPageImages(
     const tableTop = pageIndex === 0 ? FIRST_TABLE_TOP : CONTINUATION_TABLE_TOP;
     const rowsTop = pageIndex === 0 ? FIRST_ROWS_TOP : CONTINUATION_ROWS_TOP;
     if (pageIndex === 0) {
-      drawFirstPageHeader(context, entries, fontFamily, generatedAt);
+      drawFirstPageHeader(context, entries, fontFamily, generatedAt, options);
     } else {
-      drawContinuationHeader(context, entries, fontFamily);
+      drawContinuationHeader(context, entries, fontFamily, options);
     }
     tables.forEach((words, tableIndex) => {
       const tableX = MARGIN + tableIndex * (TABLE_WIDTH + TABLE_GAP);
@@ -382,7 +418,7 @@ export function renderWeakVocabularyPageImages(
       });
     });
 
-    const footer = `词汇回忆室 · 连续熟悉次数 < 3 · ${pageIndex + 1} / ${pageEntries.length}`;
+    const footer = `词汇回忆室 · ${options.footer} · ${pageIndex + 1} / ${pageEntries.length}`;
     context.fillStyle = COLORS.muted;
     setFont(context, fontFamily, 7.5);
     context.fillText(
@@ -397,6 +433,7 @@ export function renderWeakVocabularyPageImages(
 export function assembleWeakVocabularyPdf(
   pageImages: string[],
   generatedAt = new Date(),
+  options: VocabularyPdfOptions = WEAK_PDF_OPTIONS,
 ): ArrayBuffer {
   const pdf = new jsPDF({
     orientation: "portrait",
@@ -405,11 +442,11 @@ export function assembleWeakVocabularyPdf(
     compress: true,
   });
   pdf.setProperties({
-    title: "待加强词汇",
-    subject: "连续熟悉次数少于 3 的复习词汇",
+    title: options.title,
+    subject: options.subject,
     author: "词汇回忆室",
     creator: "词汇回忆室",
-    keywords: "英语, 词汇, 间隔复习, 待加强",
+    keywords: options.keywords,
   });
   pdf.setCreationDate(generatedAt);
   pdf.setLanguage("zh-CN");
@@ -424,6 +461,7 @@ export async function createWeakVocabularyPdf(
   entries: WeakVocabularyPdfEntry[],
   fontBytes: ArrayBuffer,
   generatedAt = new Date(),
+  options: VocabularyPdfOptions = WEAK_PDF_OPTIONS,
 ): Promise<ArrayBuffer> {
   const fontFamily = `VocabularyPdfCJK-${Date.now()}`;
   const fontFace = new FontFace(fontFamily, fontBytes);
@@ -441,9 +479,23 @@ export async function createWeakVocabularyPdf(
       },
       fontFamily,
       generatedAt,
+      options,
     );
-    return assembleWeakVocabularyPdf(images, generatedAt);
+    return assembleWeakVocabularyPdf(images, generatedAt, options);
   } finally {
     document.fonts.delete(fontFace);
   }
+}
+
+export async function createMasteredVocabularyPdf(
+  entries: WeakVocabularyPdfEntry[],
+  fontBytes: ArrayBuffer,
+  generatedAt = new Date(),
+): Promise<ArrayBuffer> {
+  return createWeakVocabularyPdf(
+    entries,
+    fontBytes,
+    generatedAt,
+    MASTERED_PDF_OPTIONS,
+  );
 }

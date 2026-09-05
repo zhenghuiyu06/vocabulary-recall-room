@@ -81,6 +81,7 @@ const STORAGE_KEY = "kaoyan-vocabulary-recall-v1";
 const HOUR = 60 * 60 * 1000;
 const REVIEW_INTERVALS = [12 * HOUR, 24 * HOUR, 3 * 24 * HOUR, 7 * 24 * HOUR];
 const REVIEW_STEPS = ["初见", "12H", "1D", "3D", "7D"];
+const PHOTO_MASTERY_TICKS = 3;
 const RATING_LABELS: Record<Rating, string> = {
   familiar: "熟悉",
   fuzzy: "模糊",
@@ -771,6 +772,51 @@ export default function Home() {
     }
   }
 
+  async function exportMasteredWordsPdf() {
+    if (!data || pdfExporting) return;
+    const candidates = data.dictionary
+      .filter((entry) => data.progress[entry.id].step >= 5)
+      .map((entry) => {
+        const progress = data.progress[entry.id];
+        return {
+          word: entry.word,
+          meaning: entry.meaning,
+          familiarStreak: progress.familiarStreak,
+          lastRating: progress.lastRating,
+          reviewCount: progress.reviewCount,
+        };
+      });
+
+    setPdfExporting(true);
+    try {
+      const [
+        { createMasteredVocabularyPdf, selectMasteredVocabularyEntries },
+        fontResponse,
+      ] = await Promise.all([
+        import("./vocabulary-pdf"),
+        fetch(PDF_FONT_URL, { cache: "force-cache" }),
+      ]);
+      if (!fontResponse.ok) throw new Error("font");
+      const entries = selectMasteredVocabularyEntries(candidates);
+      if (!entries.length) {
+        window.alert("长期记忆库目前还没有可导出的单词。");
+        return;
+      }
+      const pdf = await createMasteredVocabularyPdf(
+        entries,
+        await fontResponse.arrayBuffer(),
+      );
+      downloadBlob(
+        `长期记忆词汇-${new Date().toISOString().slice(0, 10)}.pdf`,
+        new Blob([pdf], { type: "application/pdf" }),
+      );
+    } catch {
+      window.alert("PDF 生成失败，请检查网络后重试。你的词库和进度不会受影响。");
+    } finally {
+      setPdfExporting(false);
+    }
+  }
+
   async function importBackup(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -983,7 +1029,7 @@ export default function Home() {
     );
     const masteredIds = new Set(
       imported
-        .filter((entry) => (tickCounts.get(entry.id) ?? 0) >= 2)
+        .filter((entry) => (tickCounts.get(entry.id) ?? 0) >= PHOTO_MASTERY_TICKS)
         .map((entry) => entry.id),
     );
     const activeEntries = imported.filter((entry) => !masteredIds.has(entry.id));
@@ -998,7 +1044,7 @@ export default function Home() {
     });
     imported.forEach((entry) => {
       const tickCount = tickCounts.get(entry.id) ?? 0;
-      if (tickCount >= 2) {
+      if (tickCount >= PHOTO_MASTERY_TICKS) {
         progress[entry.id] = masteredFromPhoto(progress[entry.id], tickCount);
       } else if (progress[entry.id]?.step >= 5) {
         progress[entry.id] = blankProgress();
@@ -1161,7 +1207,7 @@ export default function Home() {
   const masteredOcrCount = ocrCandidates.filter(
     (candidate) =>
       candidate.selected &&
-      candidate.tickCount >= 2 &&
+      candidate.tickCount >= PHOTO_MASTERY_TICKS &&
       candidate.word.trim() &&
       hasChinese(candidate.meaning),
   ).length;
@@ -1647,11 +1693,21 @@ export default function Home() {
             <div>
               <p className="eyebrow">LONG-TERM MEMORY</p>
               <h1>长期记忆库</h1>
-              <p>这些词已经通过长期检验，或在纸质词表中达到 2 个勾，将不再出现在到期复习、随机回忆或错词专项中。</p>
+              <p>这些词已经通过长期检验，或在纸质词表中达到 3 个勾，将不再出现在到期复习、随机回忆或错词专项中。</p>
             </div>
-            <div className="mastered-count" aria-label={`长期记忆库共有 ${masteredWords.length} 个词`}>
-              <strong>{masteredWords.length}</strong>
-              <span>已稳固词汇</span>
+            <div className="mastered-heading-actions">
+              <div className="mastered-count" aria-label={`长期记忆库共有 ${masteredWords.length} 个词`}>
+                <strong>{masteredWords.length}</strong>
+                <span>已稳固词汇</span>
+              </div>
+              <button
+                type="button"
+                className="secondary-button mastered-pdf-button"
+                onClick={exportMasteredWordsPdf}
+                disabled={pdfExporting || masteredWords.length === 0}
+              >
+                {pdfExporting ? "正在生成 PDF…" : `导出长期记忆 PDF（${masteredWords.length}）`}
+              </button>
             </div>
           </div>
 
@@ -1659,7 +1715,7 @@ export default function Home() {
             <div className="rule-mark">稳</div>
             <div>
               <strong>入库标准</strong>
-              <p>完成初见、12H、1D、3D、7D 的扩展间隔，并在通过 7D 时保持最近连续 3 次间隔回忆均为“熟悉”。一次“模糊”或“不会”都会中断连续记录。也可以通过拍照识别纸质记录，勾数达到 2 个后直接入库；误识别可随时点击“恢复复习”。</p>
+              <p>完成初见、12H、1D、3D、7D 的扩展间隔，并在通过 7D 时保持最近连续 3 次间隔回忆均为“熟悉”。一次“模糊”或“不会”都会中断连续记录。也可以通过拍照识别纸质记录，勾数达到 3 个后直接入库；误识别可随时点击“恢复复习”。</p>
             </div>
             <div className="rule-steps" aria-label="长期记忆入库流程">
               <span>通过 7D</span><b>＋</b><span>连续熟悉 × 3</span><b>＝</b><span>长期记忆</span>
@@ -1722,7 +1778,7 @@ export default function Home() {
               <div>
                 <p className="eyebrow">LOCAL PHOTO OCR</p>
                 <h2 id="photo-modal-title">拍照识别词表</h2>
-                <p>自动识别单词和勾数；勾数 ≥ 2 移入长期记忆，0～1 个勾继续复习。新词会优先补充常见阅读与翻译考义，照片只在当前浏览器中处理。</p>
+                <p>自动识别单词和勾数；勾数 ≥ 3 移入长期记忆，0～2 个勾继续复习。新词会优先补充常见阅读与翻译考义，照片只在当前浏览器中处理。</p>
               </div>
               <button
                 type="button"
@@ -1805,7 +1861,7 @@ export default function Home() {
                       </div>
                       {ocrCandidates.map((candidate) => (
                         <div
-                          className={`ocr-row ${candidate.tickCount >= 2 ? "ocr-row-mastered" : ""}`}
+                          className={`ocr-row ${candidate.tickCount >= PHOTO_MASTERY_TICKS ? "ocr-row-mastered" : ""}`}
                           key={candidate.id}
                         >
                           <input
@@ -1876,9 +1932,9 @@ export default function Home() {
                             }
                           />
                           <span
-                            className={`ocr-destination ${candidate.tickCount >= 2 ? "mastered" : "active"}`}
+                            className={`ocr-destination ${candidate.tickCount >= PHOTO_MASTERY_TICKS ? "mastered" : "active"}`}
                           >
-                            {candidate.tickCount >= 2 ? "移入长期记忆" : "继续复习"}
+                            {candidate.tickCount >= PHOTO_MASTERY_TICKS ? "移入长期记忆" : "继续复习"}
                           </span>
                         </div>
                       ))}

@@ -1336,6 +1336,17 @@ h1 {
   font-weight: 750;
 }
 
+.mastered-heading-actions {
+  display: grid;
+  gap: 10px;
+  min-width: 190px;
+}
+
+.mastered-pdf-button {
+  width: 100%;
+  white-space: nowrap;
+}
+
 .mastery-rule-card {
   display: grid;
   grid-template-columns: auto minmax(220px, 1fr) auto;

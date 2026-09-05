@@ -112,7 +112,8 @@ test("reviews photographed tick counts before routing words", async () => {
   );
   assert.equal(prioritized, "v. 放弃；抛弃；遗弃 n. 放任；无拘束；狂热");
   assert.match(photoParser, /countOcrTicks/);
-  assert.match(page, /candidate\.tickCount >= 2/);
+  assert.match(page, /PHOTO_MASTERY_TICKS = 3/);
+  assert.match(page, /candidate\.tickCount >= PHOTO_MASTERY_TICKS/);
   assert.match(page, /移入长期记忆/);
   assert.match(page, /继续复习/);
   assert.match(page, /处理并导出 PDF/);
@@ -170,4 +171,19 @@ test("exports a Chinese PDF containing only words below three familiar recalls",
   assert.match(pdfBuilder, /const TABLE_GAP = 12/);
   assert.match(pdfBuilder, /const labels = \["序", "英文单词", "中文释义"\]/);
   assert.doesNotMatch(pdfBuilder, /当前状态/);
+});
+
+test("exports the long-term memory library as a compact Chinese PDF", async () => {
+  const [page, pdfBuilder] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/vocabulary-pdf.ts", root), "utf8"),
+  ]);
+
+  assert.match(page, /exportMasteredWordsPdf/);
+  assert.match(page, /导出长期记忆 PDF/);
+  assert.match(page, /长期记忆词汇-/);
+  assert.match(pdfBuilder, /selectMasteredVocabularyEntries/);
+  assert.match(pdfBuilder, /candidate\.familiarStreak >= 3/);
+  assert.match(pdfBuilder, /长期记忆词汇/);
+  assert.match(pdfBuilder, /已稳固词汇 - 英中对照/);
 });
