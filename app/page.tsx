@@ -10,6 +10,11 @@ import {
   useState,
 } from "react";
 import { vocabulary, type VocabularyEntry } from "./vocabulary";
+import {
+  parseOcrText,
+  prioritizeExamMeaning,
+  type OcrCandidate,
+} from "./photo-vocabulary";
 
 type Rating = "familiar" | "fuzzy" | "unknown";
 
@@ -70,14 +75,6 @@ type LastAction = {
   rating: Rating;
 };
 
-type OcrCandidate = {
-  id: string;
-  word: string;
-  meaning: string;
-  selected: boolean;
-  source: "photo" | "existing" | "dictionary" | "manual" | "missing";
-};
-
 type OcrState = "idle" | "reading" | "review" | "error";
 
 const STORAGE_KEY = "kaoyan-vocabulary-recall-v1";
@@ -134,6 +131,26 @@ function blankProgress(): WordProgress {
     reviewCount: 0,
     familiarStreak: 0,
     history: [],
+  };
+}
+
+function masteredFromPhoto(
+  current: WordProgress | undefined,
+  tickCount: number,
+): WordProgress {
+  const now = new Date().toISOString();
+  const existing = current ?? blankProgress();
+  return {
+    ...existing,
+    step: 5,
+    nextDue: null,
+    lastRating: "familiar",
+    reviewCount: existing.reviewCount + 1,
+    familiarStreak: Math.max(3, existing.familiarStreak, tickCount),
+    history: [
+      ...existing.history,
+      { at: now, rating: "familiar", step: 5 },
+    ].slice(-50),
   };
 }
 
@@ -397,37 +414,6 @@ function parseVocabularyCsv(text: string): VocabularyEntry[] {
   );
 }
 
-function parseOcrText(text: string): OcrCandidate[] {
-  const ignoredWords = new Set(["word", "meaning", "vocabulary", "english", "chinese"]);
-  const unique = new Map<string, OcrCandidate>();
-
-  text
-    .replace(/\r/g, "")
-    .split("\n")
-    .flatMap((line) => line.split(/\s{3,}|\t+/))
-    .map((line) => line.replace(/^\s*[\d①-⑳]+[.)、．:\s-]*/, "").trim())
-    .filter(Boolean)
-    .forEach((line, index) => {
-      const match = line.match(/\b([A-Za-z][A-Za-z'-]{1,})\b(.*)$/);
-      if (!match) return;
-      const word = match[1].toLowerCase();
-      if (ignoredWords.has(word)) return;
-      const meaning = match[2]
-        .replace(/^[\s|:：;；,，.。—–-]+/, "")
-        .replace(/\s{2,}/g, " ")
-        .trim();
-      unique.set(word, {
-        id: `${word}-${index}`,
-        word,
-        meaning,
-        selected: true,
-        source: hasChinese(meaning) ? "photo" : "missing",
-      });
-    });
-
-  return [...unique.values()];
-}
-
 async function preparePhoto(file: File): Promise<Blob> {
   const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
   const maximumSide = 2400;
@@ -473,7 +459,11 @@ async function enrichOcrCandidates(
     }
     const dictionaryMeaning = variants.map((word) => local[word]).find(Boolean);
     if (dictionaryMeaning) {
-      return { ...candidate, meaning: dictionaryMeaning, source: "dictionary" };
+      return {
+        ...candidate,
+        meaning: prioritizeExamMeaning(dictionaryMeaning),
+        source: "dictionary",
+      };
     }
     return { ...candidate, meaning: "", source: "missing" };
   });
@@ -516,6 +506,8 @@ export default function Home() {
       const due = dueIds(loaded);
       if (due.length) loaded.session = makeSession(due, "due");
     }
+    // Browser-only localStorage must be hydrated after the client mounts.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setData(loaded);
   }, []);
 
@@ -934,8 +926,8 @@ export default function Home() {
 
   function updateOcrCandidate(
     id: string,
-    field: "word" | "meaning" | "selected",
-    value: string | boolean,
+    field: "word" | "meaning" | "tickCount" | "selected",
+    value: string | number | boolean,
   ) {
     setOcrCandidates((current) =>
       current.map((candidate) =>
@@ -957,32 +949,44 @@ export default function Home() {
         id: `manual-${Date.now()}`,
         word: "",
         meaning: "",
+        tickCount: 0,
         selected: true,
         source: "manual",
       },
     ]);
   }
 
-  function importOcrCandidates() {
+  async function importOcrCandidates(exportPdfAfterImport = false) {
     if (!data) return;
+    const validCandidates = ocrCandidates.filter(
+      (candidate) =>
+        candidate.selected &&
+        candidate.word.trim() &&
+        hasChinese(candidate.meaning),
+    );
     const imported = sanitizeDictionary(
-      ocrCandidates
-        .filter(
-          (candidate) =>
-            candidate.selected &&
-            candidate.word.trim() &&
-            hasChinese(candidate.meaning),
-        )
-        .map((candidate) => ({
-          word: candidate.word,
-          meaning: candidate.meaning,
-        })),
+      validCandidates.map((candidate) => ({
+        word: candidate.word,
+        meaning: candidate.meaning,
+      })),
     );
     if (!imported.length) {
       window.alert("请至少保留一个同时包含英文和中文释义的词条。");
       return;
     }
 
+    const tickCounts = new Map(
+      validCandidates.map((candidate) => [
+        candidate.word.trim().toLowerCase(),
+        candidate.tickCount,
+      ]),
+    );
+    const masteredIds = new Set(
+      imported
+        .filter((entry) => (tickCounts.get(entry.id) ?? 0) >= 2)
+        .map((entry) => entry.id),
+    );
+    const activeEntries = imported.filter((entry) => !masteredIds.has(entry.id));
     const dictionaryMap = new Map(
       data.dictionary.map((entry) => [entry.id, entry] as const),
     );
@@ -992,10 +996,65 @@ export default function Home() {
     dictionary.forEach((entry) => {
       progress[entry.id] ??= blankProgress();
     });
-    setData({ ...data, dictionary, progress });
+    imported.forEach((entry) => {
+      const tickCount = tickCounts.get(entry.id) ?? 0;
+      if (tickCount >= 2) {
+        progress[entry.id] = masteredFromPhoto(progress[entry.id], tickCount);
+      } else if (progress[entry.id]?.step >= 5) {
+        progress[entry.id] = blankProgress();
+      }
+    });
+    setData({ ...data, dictionary, progress, session: null });
     setLastAction(null);
     closePhotoPanel();
-    window.alert(`已把 ${imported.length} 个词加入词库。重复单词的释义已更新。`);
+
+    if (exportPdfAfterImport && activeEntries.length) {
+      setPdfExporting(true);
+      try {
+        const [{ createWeakVocabularyPdf, selectWeakVocabularyEntries }, fontResponse] =
+          await Promise.all([
+            import("./vocabulary-pdf"),
+            fetch(PDF_FONT_URL, { cache: "force-cache" }),
+          ]);
+        if (!fontResponse.ok) throw new Error("font");
+        const entries = selectWeakVocabularyEntries(
+          activeEntries.map((entry) => ({
+            word: entry.word,
+            meaning: entry.meaning,
+            familiarStreak: 0,
+            lastRating: null,
+            reviewCount: 0,
+          })),
+        );
+        const pdf = await createWeakVocabularyPdf(
+          entries,
+          await fontResponse.arrayBuffer(),
+        );
+        downloadBlob(
+          `照片新增待复习词汇-${new Date().toISOString().slice(0, 10)}.pdf`,
+          new Blob([pdf], { type: "application/pdf" }),
+        );
+      } catch {
+        window.alert("词汇已处理并保存，但 PDF 生成失败。你可以稍后使用主页的“导出待加强 PDF”。");
+        return;
+      } finally {
+        setPdfExporting(false);
+      }
+    }
+
+    window.alert(
+      `已处理 ${imported.length} 个词：${activeEntries.length} 个继续复习，${masteredIds.size} 个移入长期记忆库。${exportPdfAfterImport && activeEntries.length ? "本批待复习 PDF 已导出。" : ""}`,
+    );
+  }
+
+  function restoreMasteredWord(id: string) {
+    if (!data.progress[id] || data.progress[id].step < 5) return;
+    setData({
+      ...data,
+      progress: { ...data.progress, [id]: blankProgress() },
+      session: null,
+    });
+    setLastAction(null);
   }
 
   const visibleWords = useMemo(() => {
@@ -1009,6 +1068,8 @@ export default function Home() {
         entry.meaning.toLowerCase().includes(query);
       const matchesFilter =
         filter === "all" ||
+        // This snapshot is intentionally refreshed whenever the visible list rerenders.
+        // eslint-disable-next-line react-hooks/purity
         (filter === "due" && progress.nextDue !== null && progress.nextDue <= Date.now()) ||
         (filter === "mastered" && progress.step >= 5) ||
         (filter === "weak" &&
@@ -1097,6 +1158,14 @@ export default function Home() {
     (candidate) =>
       candidate.selected && candidate.word.trim() && hasChinese(candidate.meaning),
   ).length;
+  const masteredOcrCount = ocrCandidates.filter(
+    (candidate) =>
+      candidate.selected &&
+      candidate.tickCount >= 2 &&
+      candidate.word.trim() &&
+      hasChinese(candidate.meaning),
+  ).length;
+  const activeOcrCount = importableOcrCount - masteredOcrCount;
   const autoFilledOcrCount = ocrCandidates.filter(
     (candidate) =>
       candidate.source === "existing" || candidate.source === "dictionary",
@@ -1578,7 +1647,7 @@ export default function Home() {
             <div>
               <p className="eyebrow">LONG-TERM MEMORY</p>
               <h1>长期记忆库</h1>
-              <p>这些词已经通过长期检验，将不再出现在到期复习、随机回忆或错词专项中。</p>
+              <p>这些词已经通过长期检验，或在纸质词表中达到 2 个勾，将不再出现在到期复习、随机回忆或错词专项中。</p>
             </div>
             <div className="mastered-count" aria-label={`长期记忆库共有 ${masteredWords.length} 个词`}>
               <strong>{masteredWords.length}</strong>
@@ -1590,7 +1659,7 @@ export default function Home() {
             <div className="rule-mark">稳</div>
             <div>
               <strong>入库标准</strong>
-              <p>完成初见、12H、1D、3D、7D 的扩展间隔，并在通过 7D 时保持最近连续 3 次间隔回忆均为“熟悉”。一次“模糊”或“不会”都会中断连续记录，继续进入强化复习。</p>
+              <p>完成初见、12H、1D、3D、7D 的扩展间隔，并在通过 7D 时保持最近连续 3 次间隔回忆均为“熟悉”。一次“模糊”或“不会”都会中断连续记录。也可以通过拍照识别纸质记录，勾数达到 2 个后直接入库；误识别可随时点击“恢复复习”。</p>
             </div>
             <div className="rule-steps" aria-label="长期记忆入库流程">
               <span>通过 7D</span><b>＋</b><span>连续熟悉 × 3</span><b>＝</b><span>长期记忆</span>
@@ -1607,8 +1676,15 @@ export default function Home() {
                     <strong>{entry.word}</strong>
                     <p>{entry.meaning}</p>
                     <div>
-                      <span>{formatMasteredAt(progress)}</span>
-                      <span>共回忆 {progress.reviewCount} 次</span>
+                      <span>
+                        {formatMasteredAt(progress)} · 共回忆 {progress.reviewCount} 次
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => restoreMasteredWord(entry.id)}
+                      >
+                        恢复复习
+                      </button>
                     </div>
                   </article>
                 );
@@ -1646,7 +1722,7 @@ export default function Home() {
               <div>
                 <p className="eyebrow">LOCAL PHOTO OCR</p>
                 <h2 id="photo-modal-title">拍照识别词表</h2>
-                <p>只拍英文也可以：识别后会用本地英汉词典自动补全中文。照片只在当前浏览器中处理。</p>
+                <p>自动识别单词和勾数；勾数 ≥ 2 移入长期记忆，0～1 个勾继续复习。新词会优先补充常见阅读与翻译考义，照片只在当前浏览器中处理。</p>
               </div>
               <button
                 type="button"
@@ -1672,6 +1748,7 @@ export default function Home() {
                   <span>只保留词表区域</span>
                   <span>镜头与纸面保持平行</span>
                   <span>英文单词尽量一行一个</span>
+                  <span>勾尽量写在对应单词同一行</span>
                 </div>
               </aside>
 
@@ -1705,7 +1782,7 @@ export default function Home() {
                       <div>
                         <strong>{ocrMessage}</strong>
                         <span>
-                          已选择 {selectedOcrCount} 行 · 自动补全 {autoFilledOcrCount} 行 · {importableOcrCount} 行可导入
+                          已选 {selectedOcrCount} 行 · 继续复习 {activeOcrCount} 个 · 移入长期记忆 {masteredOcrCount} 个 · 自动补义 {autoFilledOcrCount} 行
                         </span>
                       </div>
                       <div className="ocr-summary-actions">
@@ -1720,12 +1797,17 @@ export default function Home() {
 
                     <div className="ocr-table" aria-label="识别结果编辑表">
                       <div className="ocr-row ocr-row-header">
-                        <span>选</span>
+                        <span>处理</span>
+                        <span>勾数</span>
                         <span>英文单词</span>
-                        <span>中文释义</span>
+                        <span>高频中文释义</span>
+                        <span>处理结果</span>
                       </div>
                       {ocrCandidates.map((candidate) => (
-                        <div className="ocr-row" key={candidate.id}>
+                        <div
+                          className={`ocr-row ${candidate.tickCount >= 2 ? "ocr-row-mastered" : ""}`}
+                          key={candidate.id}
+                        >
                           <input
                             type="checkbox"
                             checked={candidate.selected}
@@ -1737,6 +1819,20 @@ export default function Home() {
                               )
                             }
                             aria-label={`选择 ${candidate.word || "空白词条"}`}
+                          />
+                          <input
+                            type="number"
+                            min={0}
+                            max={9}
+                            value={candidate.tickCount}
+                            onChange={(event) =>
+                              updateOcrCandidate(
+                                candidate.id,
+                                "tickCount",
+                                Math.max(0, Math.min(9, Number(event.target.value) || 0)),
+                              )
+                            }
+                            aria-label={`${candidate.word || "空白词条"}的勾数`}
                           />
                           <input
                             type="text"
@@ -1769,7 +1865,7 @@ export default function Home() {
                             placeholder="请补充中文释义"
                             title={
                               candidate.source === "dictionary"
-                                ? "由本地英汉词典自动补全"
+                                ? "由本地词典精简并优先排列常见阅读与翻译考义"
                                 : candidate.source === "existing"
                                   ? "由当前词库自动匹配"
                                   : candidate.source === "photo"
@@ -1779,6 +1875,11 @@ export default function Home() {
                                       : "尚未找到中文释义"
                             }
                           />
+                          <span
+                            className={`ocr-destination ${candidate.tickCount >= 2 ? "mastered" : "active"}`}
+                          >
+                            {candidate.tickCount >= 2 ? "移入长期记忆" : "继续复习"}
+                          </span>
                         </div>
                       ))}
                       {!ocrCandidates.length && (
@@ -1805,18 +1906,26 @@ export default function Home() {
 
             {ocrState === "review" && (
               <footer className="photo-modal-footer">
-                <p>没有中文释义的行不会被导入，请先在表格中补充。</p>
+                <p>请先核对勾数和释义；没有中文释义的行不会处理，所有操作都可在长期记忆库中恢复。</p>
                 <div>
                   <button type="button" className="secondary-button" onClick={closePhotoPanel}>
                     取消
                   </button>
                   <button
                     type="button"
-                    className="primary-button"
-                    onClick={importOcrCandidates}
-                    disabled={importableOcrCount === 0}
+                    className="secondary-button"
+                    onClick={() => void importOcrCandidates(false)}
+                    disabled={importableOcrCount === 0 || pdfExporting}
                   >
-                    导入 {importableOcrCount} 个词
+                    仅确认处理
+                  </button>
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => void importOcrCandidates(true)}
+                    disabled={activeOcrCount === 0 || pdfExporting}
+                  >
+                    {pdfExporting ? "正在生成 PDF…" : `处理并导出 PDF（${activeOcrCount}）`}
                   </button>
                 </div>
               </footer>

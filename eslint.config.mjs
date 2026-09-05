@@ -13,6 +13,8 @@ const eslintConfig = defineConfig([
     "dist/**",
     "out/**",
     "build/**",
+    "public/tesseract/**",
+    "public/tesseract-core/**",
     "next-env.d.ts",
   ]),
   eslint.configs.recommended,

@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { access, readFile } from "node:fs/promises";
 import test from "node:test";
+import {
+  countOcrTicks,
+  parseOcrText,
+  prioritizeExamMeaning,
+} from "../app/photo-vocabulary.ts";
 
 const root = new URL("../", import.meta.url);
 
@@ -87,6 +92,33 @@ test("bundles local Chinese and English photo OCR", async () => {
   assert.ok(Object.keys(dictionary).length >= 37_000);
   assert.match(dictionary.manuscript, /手稿/);
   assert.match(dictionary.photosynthesis, /光合作用/);
+});
+
+test("reviews photographed tick counts before routing words", async () => {
+  const [page, photoParser] = await Promise.all([
+    readFile(new URL("app/page.tsx", root), "utf8"),
+    readFile(new URL("app/photo-vocabulary.ts", root), "utf8"),
+  ]);
+
+  assert.equal(countOcrTicks("acute  ✓ ✓"), 2);
+  assert.equal(countOcrTicks("repel v. 排斥"), 0);
+  assert.equal(countOcrTicks("slot  V | V"), 2);
+  const [candidate] = parseOcrText("1. acute adj. 严重的；急性的 ✓✓");
+  assert.equal(candidate.word, "acute");
+  assert.equal(candidate.tickCount, 2);
+  assert.equal(candidate.meaning, "adj. 严重的；急性的");
+  const prioritized = prioritizeExamMeaning(
+    "vt. 放弃, 抛弃, 遗弃, 使屈从；[医] 院禁；n. 放任, 无拘束, 狂热",
+  );
+  assert.equal(prioritized, "v. 放弃；抛弃；遗弃 n. 放任；无拘束；狂热");
+  assert.match(photoParser, /countOcrTicks/);
+  assert.match(page, /candidate\.tickCount >= 2/);
+  assert.match(page, /移入长期记忆/);
+  assert.match(page, /继续复习/);
+  assert.match(page, /处理并导出 PDF/);
+  assert.match(page, /照片新增待复习词汇-/);
+  assert.match(page, /restoreMasteredWord/);
+  assert.match(photoParser, /prioritizeExamMeaning/);
 });
 
 test("keeps session history and offers mistake-only review", async () => {

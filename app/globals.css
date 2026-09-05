@@ -1430,6 +1430,17 @@ h1 {
   font-size: 9px;
 }
 
+.mastered-word-card > div button {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--orange);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
 .mastered-badge {
   position: absolute;
   top: 18px;
@@ -1724,19 +1735,24 @@ h1 {
 }
 
 .ocr-table {
-  overflow: hidden;
+  overflow-x: auto;
   border: 1px solid var(--line);
   border-radius: 13px;
 }
 
 .ocr-row {
   display: grid;
-  grid-template-columns: 34px minmax(125px, 0.85fr) minmax(190px, 1.5fr);
+  min-width: 660px;
+  grid-template-columns: 40px 55px minmax(115px, 0.75fr) minmax(190px, 1.35fr) 94px;
   gap: 9px;
   align-items: center;
   min-height: 48px;
   padding: 7px 10px;
   border-bottom: 1px solid #ece8df;
+}
+
+.ocr-row-mastered {
+  background: rgba(57, 122, 100, 0.055);
 }
 
 .ocr-row:last-child {
@@ -1756,6 +1772,17 @@ h1 {
   width: 17px;
   height: 17px;
   accent-color: var(--green);
+}
+
+.ocr-row input[type="number"] {
+  width: 48px;
+  padding: 8px 5px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: white;
+  color: var(--ink);
+  font-size: 12px;
+  text-align: center;
 }
 
 .ocr-row input[type="text"] {
@@ -1778,6 +1805,25 @@ h1 {
 .ocr-row input.needs-meaning {
   border-color: rgba(185, 79, 71, 0.45);
   background: var(--red-soft);
+}
+
+.ocr-destination {
+  justify-self: start;
+  padding: 5px 7px;
+  border-radius: 999px;
+  font-size: 9px;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.ocr-destination.active {
+  background: var(--yellow-soft);
+  color: var(--yellow);
+}
+
+.ocr-destination.mastered {
+  background: var(--green-soft);
+  color: var(--green);
 }
 
 .ocr-empty {
@@ -2217,7 +2263,8 @@ footer {
   }
 
   .ocr-row {
-    grid-template-columns: 28px minmax(92px, 0.75fr) minmax(135px, 1.25fr);
+    min-width: 610px;
+    grid-template-columns: 34px 50px minmax(96px, 0.7fr) minmax(150px, 1.2fr) 88px;
     gap: 5px;
     padding: 6px;
   }
